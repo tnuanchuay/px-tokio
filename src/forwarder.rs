@@ -1,26 +1,33 @@
-use std::future::Future;
-use std::pin::Pin;
 use bytes::Bytes;
-use http_body_util::Full;
-use hyper::body::Incoming;
+use http_body_util::{BodyExt};
+use http_body_util::combinators::BoxBody;
 use hyper::{Request, Response};
-use hyper::service::Service;
+use hyper::client::conn::http1::Builder;
+use hyper::http::HeaderValue;
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpStream;
 
-#[derive(Debug, Clone)]
-pub(crate) struct Forwarder {}
+pub async fn proxy(mut req: Request<hyper::body::Incoming>) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    let stream = TcpStream::connect(("www.agoda.com", 80)).await.unwrap();
+    let io = TokioIo::new(stream);
 
-impl Service<Request<Incoming>> for Forwarder {
-    type Response = Response<Full<Bytes>>;
-    type Error = hyper::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    let (mut sender, conn) = Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .handshake(io)
+        .await?;
 
-    fn call(&self, req: Request<Incoming>) -> Self::Future {
-        fn mk_response(s: String) -> Result<Response<Full<Bytes>>, hyper::Error> {
-            Ok(Response::builder().body(Full::new(Bytes::from(s))).unwrap())
+    tokio::task::spawn(async move {
+        if let Err(err) = conn.await {
+            println!("Connection failed: {:?}", err);
         }
+    });
 
-        let res = mk_response("hello".to_string());
+    req.headers_mut()
+        .insert("Host", HeaderValue::from_static("www.agoda.com"));
 
-        Box::pin(async { res })
-    }
+    println!("{:?}", req);
+
+    let resp = sender.send_request(req).await?;
+    Ok(resp.map(|b| b.boxed()))
 }

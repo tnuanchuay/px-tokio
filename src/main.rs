@@ -1,30 +1,32 @@
 use std::net::{SocketAddr};
 use hyper::server::conn::http1;
+use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use crate::forwarder::Forwarder;
+
 mod forwarder;
-
-
+use forwarder::proxy;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8100));
+
     let listener = TcpListener::bind(addr).await?;
-    let forwarder = Forwarder{};
+    println!("Listening on http://{}", addr);
 
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
-        let clone_forwarder = forwarder.clone();
+
         tokio::task::spawn(async move {
-            // Finally, we bind the incoming connection to our `hello` service
             if let Err(err) = http1::Builder::new()
-                // `service_fn` converts our function in a `Service`
-                .serve_connection(io, clone_forwarder)
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .serve_connection(io, service_fn(proxy))
+                .with_upgrades()
                 .await
             {
-                println!("Error serving connection: {:?}", err);
+                println!("Failed to serve connection: {:?}", err);
             }
         });
     }
